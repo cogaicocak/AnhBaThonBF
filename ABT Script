@@ -6,11 +6,11 @@ local LocalPlayer = Players.LocalPlayer
 
 -- Settings (có thể điều chỉnh)
 local Settings = {
-    MobName = "Bandit",
+    MobName = "Bandit [Lv. 5]", -- Đảm bảo đúng tên quái
     QuestName = "BanditQuest1",
-    AttackSpeed = 0.15,
+    AttackSpeed = 0.2, -- Tăng để giảm ghost
     MaxDistance = 10,
-    BringCooldown = 0.2,
+    BringCooldown = 0.3, -- Tăng để giảm desync
     QuestCheckInterval = 30,
     TweenBring = true,
     StandAboveMobs = false,
@@ -28,11 +28,26 @@ local Cache = {
 }
 
 -- Load CombatFramework
-local CombatFramework = require(LocalPlayer.PlayerScripts:WaitForChild("CombatFramework"))
-local CombatFrameworkR = getupvalues(CombatFramework)[2]
+local function LoadCombatFramework()
+    local success, CombatFramework = pcall(function()
+        return require(LocalPlayer.PlayerScripts:WaitForChild("CombatFramework", 5))
+    end)
+    if not success then
+        warn("Failed to load CombatFramework:", CombatFramework)
+        return nil
+    end
+    local CombatFrameworkR = getupvalues(CombatFramework)[2]
+    if not CombatFrameworkR then
+        warn("CombatFrameworkR is nil")
+        return nil
+    end
+    return CombatFrameworkR
+end
+local CombatFrameworkR = LoadCombatFramework()
 
 -- Kiểm tra tài nguyên
 local function CheckDependencies()
+    if not CombatFrameworkR then return false end
     local dependencies = {
         ["CommF_"] = ReplicatedStorage.Remotes:FindFirstChild("CommF_"),
         ["RigControllerEvent"] = ReplicatedStorage:FindFirstChild("RigControllerEvent"),
@@ -50,7 +65,7 @@ end
 -- Cập nhật HumanoidRootPart
 local function UpdateHRP()
     local character = LocalPlayer.Character
-    if not character then return false end
+    if not character or character:FindFirstChild("Humanoid").Health <= 0 then return false end
     local hrp = character:FindFirstChild("HumanoidRootPart")
     if not hrp then return false end
     Cache.HRP = hrp
@@ -142,14 +157,14 @@ end
 
 -- Lấy vũ khí hiện tại
 local function CurrentWeapon()
-    local ac = CombatFrameworkR.activeController
+    local ac = CombatFrameworkR and CombatFrameworkR.activeController
+    if not ac then return LocalPlayer.Character:FindFirstChildOfClass("Tool") and LocalPlayer.Character:FindFirstChildOfClass("Tool").Name end
     local ret = ac.blades[1]
-    if not ret then return LocalPlayer.Character:FindFirstChildOfClass("Tool").Name end
+    if not ret then return LocalPlayer.Character:FindFirstChildOfClass("Tool") and LocalPlayer.Character:FindFirstChildOfClass("Tool").Name end
     pcall(function()
         while ret.Parent ~= LocalPlayer.Character do ret = ret.Parent end
     end)
-    if not ret then return LocalPlayer.Character:FindFirstChildOfClass("Tool").Name end
-    return ret
+    return ret and ret.Name or (LocalPlayer.Character:FindFirstChildOfClass("Tool") and LocalPlayer.Character:FindFirstChildOfClass("Tool").Name)
 end
 
 -- Lấy danh sách quái trong tầm
@@ -158,7 +173,7 @@ local function GetAllBladeHits(size)
     for _, v in pairs(Workspace.Enemies:GetChildren()) do
         local human = v:FindFirstChildOfClass("Humanoid")
         if human and human.RootPart and human.Health > 0 and LocalPlayer:DistanceFromCharacter(human.RootPart.Position) < size + 5 then
-            table.insert(hits, human.RootRootPart)
+            table.insert(hits, human.RootPart) -- Sửa lỗi RootRootPart
         end
     end
     return hits
@@ -167,6 +182,7 @@ end
 -- Hàm tấn công nhanh
 local cooldownFastAttack = tick()
 local function AttackFunction()
+    if not CombatFrameworkR then return end
     local ac = CombatFrameworkR.activeController
     if ac and ac.equipped then
         local bladehit = GetAllBladeHits(60)
@@ -246,12 +262,21 @@ end
 local function CheckServerChange()
     if game.JobId ~= Cache.lastServerID then
         Cache.lastServerID = game.JobId
+        pcall(function()
+            ReplicatedStorage.Remotes.CommF_:InvokeServer("AbandonQuest")
+        end)
+        Cache.activeMobs = {}
         print("Server changed! Attack a mob manually to ensure attack works.")
     end
 end
 
 -- Chạy script
 local function StartAutoFarm()
+    -- Đợi nhân vật load
+    repeat
+        wait()
+    until LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Humanoid") and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+    
     CleanupConnections()
     if not CheckDependencies() then
         warn("Missing dependencies, script might not work properly!")
