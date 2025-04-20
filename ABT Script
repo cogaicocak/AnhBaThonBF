@@ -1,0 +1,292 @@
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Workspace = game:GetService("Workspace")
+local RunService = game:GetService("RunService")
+local LocalPlayer = Players.LocalPlayer
+
+-- Settings (có thể điều chỉnh)
+local Settings = {
+    MobName = "Bandit",
+    QuestName = "BanditQuest1",
+    AttackSpeed = 0.15,
+    MaxDistance = 10,
+    BringCooldown = 0.2,
+    QuestCheckInterval = 30,
+    TweenBring = true,
+    StandAboveMobs = false,
+    HeightOffset = 7,
+    FastAttackType = "Fast" -- "Normal", "Fast", "Slow"
+}
+
+-- Cache và trạng thái
+local Cache = {
+    HRP = nil,
+    lastQuestCheck = 0,
+    activeMobs = {},
+    connections = {},
+    lastServerID = game.JobId
+}
+
+-- Load CombatFramework
+local CombatFramework = require(LocalPlayer.PlayerScripts:WaitForChild("CombatFramework"))
+local CombatFrameworkR = getupvalues(CombatFramework)[2]
+
+-- Kiểm tra tài nguyên
+local function CheckDependencies()
+    local dependencies = {
+        ["CommF_"] = ReplicatedStorage.Remotes:FindFirstChild("CommF_"),
+        ["RigControllerEvent"] = ReplicatedStorage:FindFirstChild("RigControllerEvent"),
+        ["Validator"] = ReplicatedStorage.Remotes:FindFirstChild("Validator")
+    }
+    for name, dependency in pairs(dependencies) do
+        if not dependency then
+            warn("Dependency missing:", name)
+            return false
+        end
+    end
+    return true
+end
+
+-- Cập nhật HumanoidRootPart
+local function UpdateHRP()
+    local character = LocalPlayer.Character
+    if not character then return false end
+    local hrp = character:FindFirstChild("HumanoidRootPart")
+    if not hrp then return false end
+    Cache.HRP = hrp
+    return true
+end
+
+-- Nhận nhiệm vụ
+local function AcceptQuest()
+    if os.time() - Cache.lastQuestCheck < Settings.QuestCheckInterval then return false end
+    Cache.lastQuestCheck = os.time()
+    local success = pcall(function()
+        ReplicatedStorage.Remotes.CommF_:InvokeServer("StartQuest", Settings.QuestName, 1)
+    end)
+    return success
+end
+
+-- Kiểm tra quái hợp lệ
+local function IsMobValid(mob)
+    return mob and mob.Parent and mob:FindFirstChild("Humanoid") and mob:FindFirstChild("HumanoidRootPart") and mob.Humanoid.Health > 0
+end
+
+-- Triệu hồi mobs
+local function BringMobs()
+    if not UpdateHRP() then return end
+    local closestMob = nil
+    local minDistance = math.huge
+    for _, mob in pairs(Workspace.Enemies:GetChildren()) do
+        if mob.Name == Settings.MobName and IsMobValid(mob) then
+            local mobHRP = mob.HumanoidRootPart
+            local distance = (mobHRP.Position - Cache.HRP.Position).Magnitude
+            if distance > Settings.MaxDistance then
+                local targetPosition = Cache.HRP.CFrame * CFrame.new(0, 0, 5)
+                table.insert(Cache.activeMobs, {
+                    mob = mob,
+                    startPosition = mobHRP.Position,
+                    targetPosition = targetPosition.Position,
+                    startTime = tick()
+                })
+            end
+            if distance < minDistance then
+                minDistance = distance
+                closestMob = mob
+            end
+        end
+    end
+    if Settings.StandAboveMobs and closestMob then
+        pcall(function()
+            Cache.HRP.CFrame = CFrame.new(closestMob.HumanoidRootPart.Position + Vector3.new(0, Settings.HeightOffset, 0))
+        end)
+    end
+end
+
+-- Cập nhật vị trí quái (tweening)
+local function UpdateMobPositions()
+    if not UpdateHRP() then return end
+    local toRemove = {}
+    local targetPosition = Cache.HRP.CFrame * CFrame.new(0, 0, 5).Position
+    for index, mobInfo in pairs(Cache.activeMobs) do
+        if not IsMobValid(mobInfo.mob) then
+            table.insert(toRemove, index)
+            continue
+        end
+        mobInfo.targetPosition = targetPosition
+        if Settings.TweenBring then
+            local elapsed = tick() - mobInfo.startTime
+            local duration = 0.5
+            local alpha = math.min(elapsed / duration, 1)
+            local easedAlpha = alpha * alpha * (3 - 2 * alpha)
+            local success = pcall(function()
+                local newPosition = mobInfo.startPosition:Lerp(mobInfo.targetPosition, easedAlpha)
+                mobInfo.mob.HumanoidRootPart.CFrame = CFrame.new(newPosition)
+                mobInfo.mob.HumanoidRootPart.Velocity = Vector3.new(0, 0, 0)
+            end)
+            if not success or alpha >= 1 then
+                table.insert(toRemove, index)
+            end
+        else
+            pcall(function()
+                mobInfo.mob.HumanoidRootPart.CFrame = CFrame.new(mobInfo.targetPosition)
+                mobInfo.mob.HumanoidRootPart.Velocity = Vector3.new(0, 0, 0)
+            end)
+            table.insert(toRemove, index)
+        end
+    end
+    for i = #toRemove, 1, -1 do
+        Cache.activeMobs[toRemove[i]] = nil
+    end
+end
+
+-- Lấy vũ khí hiện tại
+local function CurrentWeapon()
+    local ac = CombatFrameworkR.activeController
+    local ret = ac.blades[1]
+    if not ret then return LocalPlayer.Character:FindFirstChildOfClass("Tool").Name end
+    pcall(function()
+        while ret.Parent ~= LocalPlayer.Character do ret = ret.Parent end
+    end)
+    if not ret then return LocalPlayer.Character:FindFirstChildOfClass("Tool").Name end
+    return ret
+end
+
+-- Lấy danh sách quái trong tầm
+local function GetAllBladeHits(size)
+    local hits = {}
+    for _, v in pairs(Workspace.Enemies:GetChildren()) do
+        local human = v:FindFirstChildOfClass("Humanoid")
+        if human and human.RootPart and human.Health > 0 and LocalPlayer:DistanceFromCharacter(human.RootPart.Position) < size + 5 then
+            table.insert(hits, human.RootRootPart)
+        end
+    end
+    return hits
+end
+
+-- Hàm tấn công nhanh
+local cooldownFastAttack = tick()
+local function AttackFunction()
+    local ac = CombatFrameworkR.activeController
+    if ac and ac.equipped then
+        local bladehit = GetAllBladeHits(60)
+        if #bladehit > 0 then
+            local AcAttack8 = debug.getupvalue(ac.attack, 5)
+            local AcAttack9 = debug.getupvalue(ac.attack, 6)
+            local AcAttack7 = debug.getupvalue(ac.attack, 4)
+            local AcAttack10 = debug.getupvalue(ac.attack, 7)
+            local NumberAc12 = (AcAttack8 * 798405 + AcAttack7 * 727595) % AcAttack9
+            local NumberAc13 = AcAttack7 * 798405
+            (function()
+                NumberAc12 = (NumberAc12 * AcAttack9 + NumberAc13) % 1099511627776
+                AcAttack8 = math.floor(NumberAc12 / AcAttack9)
+                AcAttack7 = NumberAc12 - AcAttack8 * AcAttack9
+            end)()
+            AcAttack10 = AcAttack10 + 1
+            debug.setupvalue(ac.attack, 5, AcAttack8)
+            debug.setupvalue(ac.attack, 6, AcAttack9)
+            debug.setupvalue(ac.attack, 4, AcAttack7)
+            debug.setupvalue(ac.attack, 7, AcAttack10)
+            for k, v in pairs(ac.animator.anims.basic) do
+                v:Play(0.01, 0.01, 0.01)
+            end
+            if LocalPlayer.Character:FindFirstChildOfClass("Tool") and ac.blades and ac.blades[1] then
+                ReplicatedStorage.RigControllerEvent:FireServer("weaponChange", tostring(CurrentWeapon()))
+                ReplicatedStorage.Remotes.Validator:FireServer(math.floor(NumberAc12 / 1099511627776 * 16777215), AcAttack10)
+                ReplicatedStorage.RigControllerEvent:FireServer("hit", bladehit, 2, "")
+            end
+        end
+    end
+end
+
+-- Tấn công một mob
+local function AttackMob(mob)
+    coroutine.wrap(function()
+        while IsMobValid(mob) and UpdateHRP() and (mob.HumanoidRootPart.Position - Cache.HRP.Position).Magnitude <= Settings.MaxDistance do
+            pcall(function()
+                AttackFunction()
+                if Settings.FastAttackType == "Normal" then
+                    if tick() - cooldownFastAttack > 0.9 then wait(0.1) cooldownFastAttack = tick() end
+                elseif Settings.FastAttackType == "Fast" then
+                    if tick() - cooldownFastAttack > 1.5 then wait(0.01) cooldownFastAttack = tick() end
+                elseif Settings.FastAttackType == "Slow" then
+                    if tick() - cooldownFastAttack > 0.3 then wait(0.7) cooldownFastAttack = tick() end
+                end
+            end)
+            wait(Settings.AttackSpeed)
+        end
+    end)()
+end
+
+-- Tấn công liên tục
+local function FastAttack()
+    while true do
+        if UpdateHRP() then
+            for _, mob in pairs(Workspace.Enemies:GetChildren()) do
+                if mob.Name == Settings.MobName and IsMobValid(mob) then
+                    AttackMob(mob)
+                end
+            end
+        end
+        RunService.Heartbeat:Wait()
+    end
+end
+
+-- Dọn dẹp kết nối
+local function CleanupConnections()
+    for _, connection in pairs(Cache.connections) do
+        if typeof(connection) == "RBXScriptConnection" and connection.Connected then
+            connection:Disconnect()
+        end
+    end
+    Cache.connections = {}
+end
+
+-- Kiểm tra nhảy server
+local function CheckServerChange()
+    if game.JobId ~= Cache.lastServerID then
+        Cache.lastServerID = game.JobId
+        print("Server changed! Attack a mob manually to ensure attack works.")
+    end
+end
+
+-- Chạy script
+local function StartAutoFarm()
+    CleanupConnections()
+    if not CheckDependencies() then
+        warn("Missing dependencies, script might not work properly!")
+        return function() end
+    end
+    AcceptQuest()
+    local questChecker = coroutine.create(function()
+        while true do
+            AcceptQuest()
+            wait(Settings.QuestCheckInterval)
+        end
+    end)
+    local mobBringer = coroutine.create(function()
+        while true do
+            CheckServerChange()
+            BringMobs()
+            wait(Settings.BringCooldown)
+        end
+    end)
+    local positionUpdater = RunService.Heartbeat:Connect(function()
+        UpdateMobPositions()
+    end)
+    table.insert(Cache.connections, positionUpdater)
+    local attacker = coroutine.create(function()
+        FastAttack()
+    end)
+    coroutine.resume(questChecker)
+    coroutine.resume(mobBringer)
+    coroutine.resume(attacker)
+    print("Auto Farm started successfully!")
+    return function()
+        CleanupConnections()
+        print("Auto Farm stopped.")
+    end
+end
+
+-- Chạy script
+local stopAutoFarm = StartAutoFarm()
