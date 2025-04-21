@@ -2,6 +2,9 @@ local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
+-- Thêm CommF
+local CommF = ReplicatedStorage.Remotes.CommF_
+
 local Plr = Players.LocalPlayer
 local Chr = Plr.Character or Plr.CharacterAdded:Wait()
 local HRP = Chr:WaitForChild("HumanoidRootPart")
@@ -11,7 +14,9 @@ local Settings = {
     AttackDelay = 0.1,
     BringDistance = 350,
     GroupRadius = 15,
-    UpdateRate = 0.1
+    UpdateRate = 0.1,
+    PlayerHeight = 15,
+    MobsDepth = -10
 }
 
 -- GUI Setup
@@ -43,12 +48,17 @@ local Farming = false
 local Quests = {
     {Lv = 1, Name = "BanditQuest1", QLv = 1, Mon = "Bandit [Lv. 5]", Pos = CFrame.new(1060, 17, 1547)},
     {Lv = 10, Name = "JungleQuest", QLv = 1, Mon = "Monkey [Lv. 14]", Pos = CFrame.new(-1598, 37, 153)},
-    {Lv = 15, Name = "BuggyQuest1", QLv = 1, Mon = "Pirate [Lv. 16]", Pos = CFrame.new(-1140, 5, 3828)},
+    {Lv = 30, Name = "BuggyQuest1", QLv = 1, Mon = "Pirate [Lv. 16]", Pos = CFrame.new(-1140, 5, 3828)},
     {Lv = 30, Name = "BuggyQuest1", QLv = 2, Mon = "Strong Pirate [Lv. 35]", Pos = CFrame.new(-1140, 5, 3828)},
     {Lv = 40, Name = "DesertQuest", QLv = 1, Mon = "Desert Bandit [Lv. 45]", Pos = CFrame.new(897, 7, 4388)},
     {Lv = 60, Name = "DesertQuest", QLv = 2, Mon = "Desert Officer [Lv. 70]", Pos = CFrame.new(897, 7, 4388)},
     {Lv = 75, Name = "SnowQuest", QLv = 1, Mon = "Snow Bandit [Lv. 90]", Pos = CFrame.new(1389, 87, -1298)}
 }
+
+local function DebugPrint(...)
+    local message = string.format(...)
+    print(string.format("[%s] %s", os.date("%H:%M:%S"), message))
+end
 
 local function GetQuest()
     local Lv = Plr.Data.Level.Value
@@ -63,6 +73,27 @@ local function UpdateStatus(text)
     if Status then
         Status.Text = "Status: " .. text
     end
+end
+
+local function IsWithinDistance(pos1, pos2, maxDist)
+    return (pos1 - pos2).Magnitude <= maxDist
+end
+
+-- Get nearby enemies function
+local function GetNearbyEnemies(questMob)
+    local enemies = {}
+    for _, enemy in pairs(workspace.Enemies:GetChildren()) do
+        if enemy:FindFirstChild("Humanoid") 
+        and enemy:FindFirstChild("HumanoidRootPart") 
+        and enemy.Humanoid.Health > 0 
+        and enemy.Name == questMob then
+            local distance = (enemy.HumanoidRootPart.Position - HRP.Position).Magnitude
+            if distance <= Settings.BringDistance then
+                table.insert(enemies, enemy)
+            end
+        end
+    end
+    return enemies
 end
 
 -- Tìm điểm trung tâm của các quái
@@ -83,28 +114,14 @@ local function GetMobsCenter(enemies)
     return nil
 end
 
--- Get nearby enemies function
-local function GetNearbyEnemies(questMob)
-    local enemies = {}
-    for _, enemy in pairs(workspace.Enemies:GetChildren()) do
-        if enemy:FindFirstChild("Humanoid") 
-        and enemy:FindFirstChild("HumanoidRootPart") 
-        and enemy.Humanoid.Health > 0 
-        and enemy.Name == questMob then
-            local distance = (enemy.HumanoidRootPart.Position - HRP.Position).Magnitude
-            if distance <= Settings.BringDistance then
-                table.insert(enemies, enemy)
-            end
-        end
-    end
-    return enemies
-end
-
 -- Function to equip Combat
 local function EquipCombat()
-    local Combat = Plr.Backpack:FindFirstChild("Combat") or Chr:FindFirstChild("Combat")
-    if Combat and not Chr:FindFirstChild("Combat") then
-        Combat.Parent = Chr
+    if not Chr:FindFirstChild("Combat") then
+        local Combat = Plr.Backpack:FindFirstChild("Combat")
+        if Combat then
+            Combat.Parent = Chr
+            task.wait(0.1)
+        end
     end
 end
 
@@ -114,10 +131,13 @@ local function PerformAttack()
     local Combat = Chr:FindFirstChild("Combat")
     if Combat then
         Combat:Activate()
+        task.wait(Settings.AttackDelay)
     end
 end
 
 local LastAttackTime = 0
+local NoMobsTime = 0
+local MAX_NO_MOBS_TIME = 5
 
 local function StartFarm()
     local Connection
@@ -133,29 +153,37 @@ local function StartFarm()
             -- Get Quest if needed
             if not Plr.PlayerGui.Main.Quest.Visible then
                 UpdateStatus("Getting Quest...")
-                HRP.CFrame = Q.Pos
-                task.wait(0.3)
-                CommF:InvokeServer("StartQuest", Q.Name, Q.QLv)
-                task.wait(0.3)
+                for i = 1, 3 do
+                    HRP.CFrame = Q.Pos
+                    task.wait(0.3)
+                    CommF:InvokeServer("StartQuest", Q.Name, Q.QLv)
+                    task.wait(0.3)
+                    if Plr.PlayerGui.Main.Quest.Visible then
+                        DebugPrint("Quest obtained successfully")
+                        break
+                    end
+                end
             end
             
             -- Get nearby enemies
             local enemies = GetNearbyEnemies(Q.Mon)
+            DebugPrint("Found %d enemies", #enemies)
             
             if #enemies > 0 then
+                NoMobsTime = 0
                 UpdateStatus("Fighting: " .. #enemies .. " enemies")
                 
                 -- Tìm điểm trung tâm của quái
                 local mobsCenter = GetMobsCenter(enemies)
                 if mobsCenter then
                     -- Teleport người chơi đến trung tâm của quái
-                    HRP.CFrame = CFrame.new(mobsCenter + Vector3.new(0, 10, 0))
+                    HRP.CFrame = CFrame.new(mobsCenter + Vector3.new(0, Settings.PlayerHeight, 0))
                     
                     -- Bring all enemies
                     for _, enemy in pairs(enemies) do
-                        if enemy.HumanoidRootPart then
+                        if enemy.HumanoidRootPart and IsWithinDistance(enemy.HumanoidRootPart.Position, HRP.Position, Settings.BringDistance) then
                             -- Bring quái đến dưới người chơi
-                            enemy.HumanoidRootPart.CFrame = CFrame.new(mobsCenter + Vector3.new(0, -5, 0))
+                            enemy.HumanoidRootPart.CFrame = CFrame.new(mobsCenter + Vector3.new(0, Settings.MobsDepth, 0))
                             enemy.HumanoidRootPart.Velocity = Vector3.new(0, 0, 0)
                             enemy.HumanoidRootPart.CanCollide = false
                             
@@ -177,9 +205,16 @@ local function StartFarm()
                 end
             else
                 UpdateStatus("Searching for mobs...")
-                -- Di chuyển đến khu vực quái spawn
+                NoMobsTime = NoMobsTime + Settings.UpdateRate
+                if NoMobsTime >= MAX_NO_MOBS_TIME then
+                    NoMobsTime = 0
+                    if Plr.PlayerGui.Main.Quest.Visible then
+                        CommF:InvokeServer("AbandonQuest")
+                        DebugPrint("Quest abandoned due to no mobs found")
+                    end
+                end
                 local spawnPos = Q.Pos.Position
-                HRP.CFrame = CFrame.new(spawnPos + Vector3.new(0, 10, 0))
+                HRP.CFrame = CFrame.new(spawnPos + Vector3.new(0, Settings.PlayerHeight, 0))
             end
         end)
     end)
@@ -191,15 +226,18 @@ Button.MouseButton1Click:Connect(function()
         Button.Text = "Stop Farm"
         Button.BackgroundColor3 = Color3.fromRGB(255, 0, 0)
         StartFarm()
+        DebugPrint("Started farming")
     else
         Button.Text = "Start Farm"
         Button.BackgroundColor3 = Color3.fromRGB(0, 255, 0)
         UpdateStatus("Stopped")
+        DebugPrint("Stopped farming")
     end
 end)
 
 UpdateStatus("Ready to farm")
+DebugPrint("Script started for user: %s", Plr.Name)
+DebugPrint("Current Level: %d", Plr.Data.Level.Value)
+DebugPrint("Current Quest: %s", GetQuest().Name)
+DebugPrint("Target Monster: %s", GetQuest().Mon)
 print(string.format("[%s] Started farming script for: %s", os.date("%Y-%m-%d %H:%M:%S"), Plr.Name))
-print("Current Level:", Plr.Data.Level.Value)
-print("Current Quest:", GetQuest().Name)
-print("Target Monster:", GetQuest().Mon)
