@@ -1,317 +1,195 @@
 local Players = game:GetService("Players")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local Workspace = game:GetService("Workspace")
 local RunService = game:GetService("RunService")
-local LocalPlayer = Players.LocalPlayer
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
--- Settings (có thể điều chỉnh)
+-- Variables
+local Plr = Players.LocalPlayer
+local Chr = Plr.Character or Plr.CharacterAdded:Wait()
+local HRP = Chr:WaitForChild("HumanoidRootPart")
+
+-- Remote paths
+local CommF = ReplicatedStorage.Remotes.CommF_
+local RegisterHit = ReplicatedStorage.Modules.Net:FindFirstChild("RE/RegisterHit")
+local RegisterAttack = ReplicatedStorage.Modules.Net:FindFirstChild("RE/RegisterAttack")
+
+-- Settings
 local Settings = {
-    MobName = "Bandit [Lv. 5]", -- Đảm bảo đúng tên quái
-    QuestName = "BanditQuest1",
-    AttackSpeed = 0.2, -- Tăng để giảm ghost
-    MaxDistance = 10,
-    BringCooldown = 0.3, -- Tăng để giảm desync
-    QuestCheckInterval = 30,
-    TweenBring = true,
-    StandAboveMobs = false,
-    HeightOffset = 7,
-    FastAttackType = "Fast" -- "Normal", "Fast", "Slow"
+    AttackDelay = 0.1,
+    BringDistance = 350,
+    GroupRadius = 15,
+    UpdateRate = 0.1
 }
 
--- Cache và trạng thái
-local Cache = {
-    HRP = nil,
-    lastQuestCheck = 0,
-    activeMobs = {},
-    connections = {},
-    lastServerID = game.JobId
+-- GUI Setup
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Parent = Plr:WaitForChild("PlayerGui")
+
+local Button = Instance.new("TextButton")
+Button.Size = UDim2.new(0, 100, 0, 50)
+Button.Position = UDim2.new(0.1, 0, 0.8, 0)
+Button.BackgroundColor3 = Color3.fromRGB(0, 255, 0)
+Button.Text = "Start Farm"
+Button.TextColor3 = Color3.fromRGB(255, 255, 255)
+Button.Font = Enum.Font.SourceSansBold
+Button.TextSize = 20
+Button.Parent = ScreenGui
+
+local Status = Instance.new("TextLabel")
+Status.Size = UDim2.new(0, 200, 0, 30)
+Status.Position = UDim2.new(0.1, 0, 0.7, 0)
+Status.BackgroundTransparency = 1
+Status.Text = "Status: Waiting..."
+Status.TextColor3 = Color3.fromRGB(255, 255, 255)
+Status.Font = Enum.Font.SourceSansBold
+Status.TextSize = 16
+Status.Parent = ScreenGui
+
+local Farming = false
+
+local Quests = {
+    {Lv = 1, Name = "BanditQuest1", QLv = 1, Mon = "Bandit [Lv. 5]", Pos = CFrame.new(1060, 17, 1547)},
+    {Lv = 10, Name = "JungleQuest", QLv = 1, Mon = "Monkey [Lv. 14]", Pos = CFrame.new(-1598, 37, 153)},
+    {Lv = 30, Name = "BuggyQuest1", QLv = 1, Mon = "Pirate [Lv. 16]", Pos = CFrame.new(-1140, 5, 3828)},
+    {Lv = 30, Name = "BuggyQuest1", QLv = 2, Mon = "Strong Pirate [Lv. 35]", Pos = CFrame.new(-1140, 5, 3828)},
+    {Lv = 40, Name = "DesertQuest", QLv = 1, Mon = "Desert Bandit [Lv. 45]", Pos = CFrame.new(897, 7, 4388)},
+    {Lv = 60, Name = "DesertQuest", QLv = 2, Mon = "Desert Officer [Lv. 70]", Pos = CFrame.new(897, 7, 4388)},
+    {Lv = 75, Name = "SnowQuest", QLv = 1, Mon = "Snow Bandit [Lv. 90]", Pos = CFrame.new(1389, 87, -1298)}
 }
 
--- Load CombatFramework
-local function LoadCombatFramework()
-    local success, CombatFramework = pcall(function()
-        return require(LocalPlayer.PlayerScripts:WaitForChild("CombatFramework", 5))
-    end)
-    if not success then
-        warn("Failed to load CombatFramework:", CombatFramework)
-        return nil
+local function GetQuest()
+    local Lv = Plr.Data.Level.Value
+    local Q = Quests[1]
+    for _,v in ipairs(Quests) do
+        if Lv >= v.Lv then Q = v else break end
     end
-    local CombatFrameworkR = getupvalues(CombatFramework)[2]
-    if not CombatFrameworkR then
-        warn("CombatFrameworkR is nil")
-        return nil
+    return Q
+end
+
+local function UpdateStatus(text)
+    if Status then
+        Status.Text = "Status: " .. text
     end
-    return CombatFrameworkR
-end
-local CombatFrameworkR = LoadCombatFramework()
-
--- Kiểm tra tài nguyên
-local function CheckDependencies()
-    if not CombatFrameworkR then return false end
-    local dependencies = {
-        ["CommF_"] = ReplicatedStorage.Remotes:FindFirstChild("CommF_"),
-        ["RigControllerEvent"] = ReplicatedStorage:FindFirstChild("RigControllerEvent"),
-        ["Validator"] = ReplicatedStorage.Remotes:FindFirstChild("Validator")
-    }
-    for name, dependency in pairs(dependencies) do
-        if not dependency then
-            warn("Dependency missing:", name)
-            return false
-        end
-    end
-    return true
 end
 
--- Cập nhật HumanoidRootPart
-local function UpdateHRP()
-    local character = LocalPlayer.Character
-    if not character or character:FindFirstChild("Humanoid").Health <= 0 then return false end
-    local hrp = character:FindFirstChild("HumanoidRootPart")
-    if not hrp then return false end
-    Cache.HRP = hrp
-    return true
-end
-
--- Nhận nhiệm vụ
-local function AcceptQuest()
-    if os.time() - Cache.lastQuestCheck < Settings.QuestCheckInterval then return false end
-    Cache.lastQuestCheck = os.time()
-    local success = pcall(function()
-        ReplicatedStorage.Remotes.CommF_:InvokeServer("StartQuest", Settings.QuestName, 1)
-    end)
-    return success
-end
-
--- Kiểm tra quái hợp lệ
-local function IsMobValid(mob)
-    return mob and mob.Parent and mob:FindFirstChild("Humanoid") and mob:FindFirstChild("HumanoidRootPart") and mob.Humanoid.Health > 0
-end
-
--- Triệu hồi mobs
-local function BringMobs()
-    if not UpdateHRP() then return end
-    local closestMob = nil
-    local minDistance = math.huge
-    for _, mob in pairs(Workspace.Enemies:GetChildren()) do
-        if mob.Name == Settings.MobName and IsMobValid(mob) then
-            local mobHRP = mob.HumanoidRootPart
-            local distance = (mobHRP.Position - Cache.HRP.Position).Magnitude
-            if distance > Settings.MaxDistance then
-                local targetPosition = Cache.HRP.CFrame * CFrame.new(0, 0, 5)
-                table.insert(Cache.activeMobs, {
-                    mob = mob,
-                    startPosition = mobHRP.Position,
-                    targetPosition = targetPosition.Position,
-                    startTime = tick()
-                })
-            end
-            if distance < minDistance then
-                minDistance = distance
-                closestMob = mob
+-- Get nearby enemies function
+local function GetNearbyEnemies(questMob)
+    local enemies = {}
+    for _, enemy in pairs(workspace.Enemies:GetChildren()) do
+        if enemy:FindFirstChild("Humanoid") 
+        and enemy:FindFirstChild("HumanoidRootPart") 
+        and enemy.Humanoid.Health > 0 
+        and enemy.Name == questMob then
+            local distance = (enemy.HumanoidRootPart.Position - HRP.Position).Magnitude
+            if distance <= Settings.BringDistance then
+                table.insert(enemies, enemy)
             end
         end
     end
-    if Settings.StandAboveMobs and closestMob then
-        pcall(function()
-            Cache.HRP.CFrame = CFrame.new(closestMob.HumanoidRootPart.Position + Vector3.new(0, Settings.HeightOffset, 0))
-        end)
+    return enemies
+end
+
+-- Function to equip Combat
+local function EquipCombat()
+    local Combat = Plr.Backpack:FindFirstChild("Combat") or Chr:FindFirstChild("Combat")
+    if Combat and not Chr:FindFirstChild("Combat") then
+        Combat.Parent = Chr
     end
 end
 
--- Cập nhật vị trí quái (tweening)
-local function UpdateMobPositions()
-    if not UpdateHRP() then return end
-    local toRemove = {}
-    local targetPosition = Cache.HRP.CFrame * CFrame.new(0, 0, 5).Position
-    for index, mobInfo in pairs(Cache.activeMobs) do
-        if not IsMobValid(mobInfo.mob) then
-            table.insert(toRemove, index)
-            continue
-        end
-        mobInfo.targetPosition = targetPosition
-        if Settings.TweenBring then
-            local elapsed = tick() - mobInfo.startTime
-            local duration = 0.5
-            local alpha = math.min(elapsed / duration, 1)
-            local easedAlpha = alpha * alpha * (3 - 2 * alpha)
-            local success = pcall(function()
-                local newPosition = mobInfo.startPosition:Lerp(mobInfo.targetPosition, easedAlpha)
-                mobInfo.mob.HumanoidRootPart.CFrame = CFrame.new(newPosition)
-                mobInfo.mob.HumanoidRootPart.Velocity = Vector3.new(0, 0, 0)
-            end)
-            if not success or alpha >= 1 then
-                table.insert(toRemove, index)
-            end
-        else
-            pcall(function()
-                mobInfo.mob.HumanoidRootPart.CFrame = CFrame.new(mobInfo.targetPosition)
-                mobInfo.mob.HumanoidRootPart.Velocity = Vector3.new(0, 0, 0)
-            end)
-            table.insert(toRemove, index)
-        end
-    end
-    for i = #toRemove, 1, -1 do
-        Cache.activeMobs[toRemove[i]] = nil
+-- Modified Attack function to use Combat
+local function PerformAttack()
+    EquipCombat() -- Make sure Combat is equipped
+    local Combat = Chr:FindFirstChild("Combat")
+    if Combat then
+        Combat:Activate()
     end
 end
 
--- Lấy vũ khí hiện tại
-local function CurrentWeapon()
-    local ac = CombatFrameworkR and CombatFrameworkR.activeController
-    if not ac then return LocalPlayer.Character:FindFirstChildOfClass("Tool") and LocalPlayer.Character:FindFirstChildOfClass("Tool").Name end
-    local ret = ac.blades[1]
-    if not ret then return LocalPlayer.Character:FindFirstChildOfClass("Tool") and LocalPlayer.Character:FindFirstChildOfClass("Tool").Name end
-    pcall(function()
-        while ret.Parent ~= LocalPlayer.Character do ret = ret.Parent end
-    end)
-    return ret and ret.Name or (LocalPlayer.Character:FindFirstChildOfClass("Tool") and LocalPlayer.Character:FindFirstChildOfClass("Tool").Name)
-end
+local LastAttackTime = 0
 
--- Lấy danh sách quái trong tầm
-local function GetAllBladeHits(size)
-    local hits = {}
-    for _, v in pairs(Workspace.Enemies:GetChildren()) do
-        local human = v:FindFirstChildOfClass("Humanoid")
-        if human and human.RootPart and human.Health > 0 and LocalPlayer:DistanceFromCharacter(human.RootPart.Position) < size + 5 then
-            table.insert(hits, human.RootPart) -- Sửa lỗi RootRootPart
-        end
-    end
-    return hits
-end
-
--- Hàm tấn công nhanh
-local cooldownFastAttack = tick()
-local function AttackFunction()
-    if not CombatFrameworkR then return end
-    local ac = CombatFrameworkR.activeController
-    if ac and ac.equipped then
-        local bladehit = GetAllBladeHits(60)
-        if #bladehit > 0 then
-            local AcAttack8 = debug.getupvalue(ac.attack, 5)
-            local AcAttack9 = debug.getupvalue(ac.attack, 6)
-            local AcAttack7 = debug.getupvalue(ac.attack, 4)
-            local AcAttack10 = debug.getupvalue(ac.attack, 7)
-            local NumberAc12 = (AcAttack8 * 798405 + AcAttack7 * 727595) % AcAttack9
-            local NumberAc13 = AcAttack7 * 798405
-            (function()
-                NumberAc12 = (NumberAc12 * AcAttack9 + NumberAc13) % 1099511627776
-                AcAttack8 = math.floor(NumberAc12 / AcAttack9)
-                AcAttack7 = NumberAc12 - AcAttack8 * AcAttack9
-            end)()
-            AcAttack10 = AcAttack10 + 1
-            debug.setupvalue(ac.attack, 5, AcAttack8)
-            debug.setupvalue(ac.attack, 6, AcAttack9)
-            debug.setupvalue(ac.attack, 4, AcAttack7)
-            debug.setupvalue(ac.attack, 7, AcAttack10)
-            for k, v in pairs(ac.animator.anims.basic) do
-                v:Play(0.01, 0.01, 0.01)
-            end
-            if LocalPlayer.Character:FindFirstChildOfClass("Tool") and ac.blades and ac.blades[1] then
-                ReplicatedStorage.RigControllerEvent:FireServer("weaponChange", tostring(CurrentWeapon()))
-                ReplicatedStorage.Remotes.Validator:FireServer(math.floor(NumberAc12 / 1099511627776 * 16777215), AcAttack10)
-                ReplicatedStorage.RigControllerEvent:FireServer("hit", bladehit, 2, "")
-            end
-        end
-    end
-end
-
--- Tấn công một mob
-local function AttackMob(mob)
-    coroutine.wrap(function()
-        while IsMobValid(mob) and UpdateHRP() and (mob.HumanoidRootPart.Position - Cache.HRP.Position).Magnitude <= Settings.MaxDistance do
-            pcall(function()
-                AttackFunction()
-                if Settings.FastAttackType == "Normal" then
-                    if tick() - cooldownFastAttack > 0.9 then wait(0.1) cooldownFastAttack = tick() end
-                elseif Settings.FastAttackType == "Fast" then
-                    if tick() - cooldownFastAttack > 1.5 then wait(0.01) cooldownFastAttack = tick() end
-                elseif Settings.FastAttackType == "Slow" then
-                    if tick() - cooldownFastAttack > 0.3 then wait(0.7) cooldownFastAttack = tick() end
-                end
-            end)
-            wait(Settings.AttackSpeed)
-        end
-    end)()
-end
-
--- Tấn công liên tục
-local function FastAttack()
-    while true do
-        if UpdateHRP() then
-            for _, mob in pairs(Workspace.Enemies:GetChildren()) do
-                if mob.Name == Settings.MobName and IsMobValid(mob) then
-                    AttackMob(mob)
-                end
-            end
-        end
-        RunService.Heartbeat:Wait()
-    end
-end
-
--- Dọn dẹp kết nối
-local function CleanupConnections()
-    for _, connection in pairs(Cache.connections) do
-        if typeof(connection) == "RBXScriptConnection" and connection.Connected then
-            connection:Disconnect()
-        end
-    end
-    Cache.connections = {}
-end
-
--- Kiểm tra nhảy server
-local function CheckServerChange()
-    if game.JobId ~= Cache.lastServerID then
-        Cache.lastServerID = game.JobId
-        pcall(function()
-            ReplicatedStorage.Remotes.CommF_:InvokeServer("AbandonQuest")
-        end)
-        Cache.activeMobs = {}
-        print("Server changed! Attack a mob manually to ensure attack works.")
-    end
-end
-
--- Chạy script
-local function StartAutoFarm()
-    -- Đợi nhân vật load
-    repeat
-        wait()
-    until LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Humanoid") and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+local function StartFarm()
+    local CenterPosition = nil
     
-    CleanupConnections()
-    if not CheckDependencies() then
-        warn("Missing dependencies, script might not work properly!")
-        return function() end
-    end
-    AcceptQuest()
-    local questChecker = coroutine.create(function()
-        while true do
-            AcceptQuest()
-            wait(Settings.QuestCheckInterval)
+    local Connection
+    Connection = RunService.Heartbeat:Connect(function()
+        if not Farming then 
+            Connection:Disconnect()
+            return 
         end
+        
+        pcall(function()
+            local Q = GetQuest()
+            
+            -- Get Quest if needed
+            if not Plr.PlayerGui.Main.Quest.Visible then
+                UpdateStatus("Getting Quest...")
+                HRP.CFrame = Q.Pos
+                task.wait(0.3)
+                CommF:InvokeServer("StartQuest", Q.Name, Q.QLv)
+                task.wait(0.3)
+                CenterPosition = Q.Pos.Position
+            end
+            
+            -- Set initial center position if not set
+            if not CenterPosition then
+                CenterPosition = Q.Pos.Position
+            end
+            
+            -- Get nearby enemies
+            local enemies = GetNearbyEnemies(Q.Mon)
+            
+            if #enemies > 0 then
+                UpdateStatus("Fighting: " .. #enemies .. " enemies")
+                
+                -- Bring all enemies
+                for _, enemy in pairs(enemies) do
+                    if enemy.HumanoidRootPart then
+                        -- Set enemy position below player
+                        enemy.HumanoidRootPart.CFrame = CFrame.new(CenterPosition + Vector3.new(0, -5, 0))
+                        enemy.HumanoidRootPart.Velocity = Vector3.new(0, 0, 0)
+                        enemy.HumanoidRootPart.CanCollide = false
+                        
+                        -- Disable enemy movement
+                        if enemy.Humanoid then
+                            enemy.Humanoid.PlatformStand = true
+                            enemy.Humanoid.WalkSpeed = 0
+                            enemy.Humanoid.JumpPower = 0
+                        end
+                    end
+                end
+                
+                -- Position player above enemies
+                HRP.CFrame = CFrame.new(CenterPosition + Vector3.new(0, 10, 0))
+                
+                -- Attack with cooldown
+                local currentTime = tick()
+                if currentTime - LastAttackTime >= Settings.AttackDelay then
+                    PerformAttack()
+                    LastAttackTime = currentTime
+                end
+            else
+                UpdateStatus("Waiting for mobs...")
+                HRP.CFrame = CFrame.new(CenterPosition + Vector3.new(0, 10, 0))
+            end
+        end)
     end)
-    local mobBringer = coroutine.create(function()
-        while true do
-            CheckServerChange()
-            BringMobs()
-            wait(Settings.BringCooldown)
-        end
-    end)
-    local positionUpdater = RunService.Heartbeat:Connect(function()
-        UpdateMobPositions()
-    end)
-    table.insert(Cache.connections, positionUpdater)
-    local attacker = coroutine.create(function()
-        FastAttack()
-    end)
-    coroutine.resume(questChecker)
-    coroutine.resume(mobBringer)
-    coroutine.resume(attacker)
-    print("Auto Farm started successfully!")
-    return function()
-        CleanupConnections()
-        print("Auto Farm stopped.")
-    end
 end
 
--- Chạy script
-local stopAutoFarm = StartAutoFarm()
+Button.MouseButton1Click:Connect(function()
+    Farming = not Farming
+    if Farming then
+        Button.Text = "Stop Farm"
+        Button.BackgroundColor3 = Color3.fromRGB(255, 0, 0)
+        StartFarm()
+    else
+        Button.Text = "Start Farm"
+        Button.BackgroundColor3 = Color3.fromRGB(0, 255, 0)
+        UpdateStatus("Stopped")
+    end
+end)
+
+UpdateStatus("Ready to farm")
+print(string.format("[%s] Started farming script for: %s", os.date("%Y-%m-%d %H:%M:%S"), Plr.Name))
+print("Current Level:", Plr.Data.Level.Value)
+print("Current Quest:", GetQuest().Name)
+print("Target Monster:", GetQuest().Mon)
