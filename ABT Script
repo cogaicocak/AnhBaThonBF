@@ -14,8 +14,56 @@ local Settings = {
     UpdateRate = 0.1
 }
 
--- GUI Setup (giữ nguyên phần GUI như cũ)
--- ...
+-- GUI Setup
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Parent = Plr:WaitForChild("PlayerGui")
+
+local Button = Instance.new("TextButton")
+Button.Size = UDim2.new(0, 100, 0, 50)
+Button.Position = UDim2.new(0.1, 0, 0.8, 0)
+Button.BackgroundColor3 = Color3.fromRGB(0, 255, 0)
+Button.Text = "Start Farm"
+Button.TextColor3 = Color3.fromRGB(255, 255, 255)
+Button.Font = Enum.Font.SourceSansBold
+Button.TextSize = 20
+Button.Parent = ScreenGui
+
+local Status = Instance.new("TextLabel")
+Status.Size = UDim2.new(0, 200, 0, 30)
+Status.Position = UDim2.new(0.1, 0, 0.7, 0)
+Status.BackgroundTransparency = 1
+Status.Text = "Status: Waiting..."
+Status.TextColor3 = Color3.fromRGB(255, 255, 255)
+Status.Font = Enum.Font.SourceSansBold
+Status.TextSize = 16
+Status.Parent = ScreenGui
+
+local Farming = false
+
+local Quests = {
+    {Lv = 1, Name = "BanditQuest1", QLv = 1, Mon = "Bandit [Lv. 5]", Pos = CFrame.new(1060, 17, 1547)},
+    {Lv = 10, Name = "JungleQuest", QLv = 1, Mon = "Monkey [Lv. 14]", Pos = CFrame.new(-1598, 37, 153)},
+    {Lv = 15, Name = "BuggyQuest1", QLv = 1, Mon = "Pirate [Lv. 16]", Pos = CFrame.new(-1140, 5, 3828)},
+    {Lv = 30, Name = "BuggyQuest1", QLv = 2, Mon = "Strong Pirate [Lv. 35]", Pos = CFrame.new(-1140, 5, 3828)},
+    {Lv = 40, Name = "DesertQuest", QLv = 1, Mon = "Desert Bandit [Lv. 45]", Pos = CFrame.new(897, 7, 4388)},
+    {Lv = 60, Name = "DesertQuest", QLv = 2, Mon = "Desert Officer [Lv. 70]", Pos = CFrame.new(897, 7, 4388)},
+    {Lv = 75, Name = "SnowQuest", QLv = 1, Mon = "Snow Bandit [Lv. 90]", Pos = CFrame.new(1389, 87, -1298)}
+}
+
+local function GetQuest()
+    local Lv = Plr.Data.Level.Value
+    local Q = Quests[1]
+    for _,v in ipairs(Quests) do
+        if Lv >= v.Lv then Q = v else break end
+    end
+    return Q
+end
+
+local function UpdateStatus(text)
+    if Status then
+        Status.Text = "Status: " .. text
+    end
+end
 
 -- Tìm điểm trung tâm của các quái
 local function GetMobsCenter(enemies)
