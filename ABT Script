@@ -2,15 +2,9 @@ local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
--- Variables
 local Plr = Players.LocalPlayer
 local Chr = Plr.Character or Plr.CharacterAdded:Wait()
 local HRP = Chr:WaitForChild("HumanoidRootPart")
-
--- Remote paths
-local CommF = ReplicatedStorage.Remotes.CommF_
-local RegisterHit = ReplicatedStorage.Modules.Net:FindFirstChild("RE/RegisterHit")
-local RegisterAttack = ReplicatedStorage.Modules.Net:FindFirstChild("RE/RegisterAttack")
 
 -- Settings
 local Settings = {
@@ -20,55 +14,25 @@ local Settings = {
     UpdateRate = 0.1
 }
 
--- GUI Setup
-local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Parent = Plr:WaitForChild("PlayerGui")
+-- GUI Setup (giữ nguyên phần GUI như cũ)
+-- ...
 
-local Button = Instance.new("TextButton")
-Button.Size = UDim2.new(0, 100, 0, 50)
-Button.Position = UDim2.new(0.1, 0, 0.8, 0)
-Button.BackgroundColor3 = Color3.fromRGB(0, 255, 0)
-Button.Text = "Start Farm"
-Button.TextColor3 = Color3.fromRGB(255, 255, 255)
-Button.Font = Enum.Font.SourceSansBold
-Button.TextSize = 20
-Button.Parent = ScreenGui
-
-local Status = Instance.new("TextLabel")
-Status.Size = UDim2.new(0, 200, 0, 30)
-Status.Position = UDim2.new(0.1, 0, 0.7, 0)
-Status.BackgroundTransparency = 1
-Status.Text = "Status: Waiting..."
-Status.TextColor3 = Color3.fromRGB(255, 255, 255)
-Status.Font = Enum.Font.SourceSansBold
-Status.TextSize = 16
-Status.Parent = ScreenGui
-
-local Farming = false
-
-local Quests = {
-    {Lv = 1, Name = "BanditQuest1", QLv = 1, Mon = "Bandit [Lv. 5]", Pos = CFrame.new(1060, 17, 1547)},
-    {Lv = 10, Name = "JungleQuest", QLv = 1, Mon = "Monkey [Lv. 14]", Pos = CFrame.new(-1598, 37, 153)},
-    {Lv = 30, Name = "BuggyQuest1", QLv = 1, Mon = "Pirate [Lv. 16]", Pos = CFrame.new(-1140, 5, 3828)},
-    {Lv = 30, Name = "BuggyQuest1", QLv = 2, Mon = "Strong Pirate [Lv. 35]", Pos = CFrame.new(-1140, 5, 3828)},
-    {Lv = 40, Name = "DesertQuest", QLv = 1, Mon = "Desert Bandit [Lv. 45]", Pos = CFrame.new(897, 7, 4388)},
-    {Lv = 60, Name = "DesertQuest", QLv = 2, Mon = "Desert Officer [Lv. 70]", Pos = CFrame.new(897, 7, 4388)},
-    {Lv = 75, Name = "SnowQuest", QLv = 1, Mon = "Snow Bandit [Lv. 90]", Pos = CFrame.new(1389, 87, -1298)}
-}
-
-local function GetQuest()
-    local Lv = Plr.Data.Level.Value
-    local Q = Quests[1]
-    for _,v in ipairs(Quests) do
-        if Lv >= v.Lv then Q = v else break end
+-- Tìm điểm trung tâm của các quái
+local function GetMobsCenter(enemies)
+    local center = Vector3.new(0, 0, 0)
+    local count = 0
+    
+    for _, enemy in pairs(enemies) do
+        if enemy.HumanoidRootPart then
+            center = center + enemy.HumanoidRootPart.Position
+            count = count + 1
+        end
     end
-    return Q
-end
-
-local function UpdateStatus(text)
-    if Status then
-        Status.Text = "Status: " .. text
+    
+    if count > 0 then
+        return center / count
     end
+    return nil
 end
 
 -- Get nearby enemies function
@@ -96,9 +60,9 @@ local function EquipCombat()
     end
 end
 
--- Modified Attack function to use Combat
+-- Attack function
 local function PerformAttack()
-    EquipCombat() -- Make sure Combat is equipped
+    EquipCombat()
     local Combat = Chr:FindFirstChild("Combat")
     if Combat then
         Combat:Activate()
@@ -108,8 +72,6 @@ end
 local LastAttackTime = 0
 
 local function StartFarm()
-    local CenterPosition = nil
-    
     local Connection
     Connection = RunService.Heartbeat:Connect(function()
         if not Farming then 
@@ -127,12 +89,6 @@ local function StartFarm()
                 task.wait(0.3)
                 CommF:InvokeServer("StartQuest", Q.Name, Q.QLv)
                 task.wait(0.3)
-                CenterPosition = Q.Pos.Position
-            end
-            
-            -- Set initial center position if not set
-            if not CenterPosition then
-                CenterPosition = Q.Pos.Position
             end
             
             -- Get nearby enemies
@@ -141,35 +97,41 @@ local function StartFarm()
             if #enemies > 0 then
                 UpdateStatus("Fighting: " .. #enemies .. " enemies")
                 
-                -- Bring all enemies
-                for _, enemy in pairs(enemies) do
-                    if enemy.HumanoidRootPart then
-                        -- Set enemy position below player
-                        enemy.HumanoidRootPart.CFrame = CFrame.new(CenterPosition + Vector3.new(0, -5, 0))
-                        enemy.HumanoidRootPart.Velocity = Vector3.new(0, 0, 0)
-                        enemy.HumanoidRootPart.CanCollide = false
-                        
-                        -- Disable enemy movement
-                        if enemy.Humanoid then
-                            enemy.Humanoid.PlatformStand = true
-                            enemy.Humanoid.WalkSpeed = 0
-                            enemy.Humanoid.JumpPower = 0
+                -- Tìm điểm trung tâm của quái
+                local mobsCenter = GetMobsCenter(enemies)
+                if mobsCenter then
+                    -- Teleport người chơi đến trung tâm của quái
+                    HRP.CFrame = CFrame.new(mobsCenter + Vector3.new(0, 10, 0))
+                    
+                    -- Bring all enemies
+                    for _, enemy in pairs(enemies) do
+                        if enemy.HumanoidRootPart then
+                            -- Bring quái đến dưới người chơi
+                            enemy.HumanoidRootPart.CFrame = CFrame.new(mobsCenter + Vector3.new(0, -5, 0))
+                            enemy.HumanoidRootPart.Velocity = Vector3.new(0, 0, 0)
+                            enemy.HumanoidRootPart.CanCollide = false
+                            
+                            -- Disable enemy movement
+                            if enemy.Humanoid then
+                                enemy.Humanoid.PlatformStand = true
+                                enemy.Humanoid.WalkSpeed = 0
+                                enemy.Humanoid.JumpPower = 0
+                            end
                         end
                     end
-                end
-                
-                -- Position player above enemies
-                HRP.CFrame = CFrame.new(CenterPosition + Vector3.new(0, 10, 0))
-                
-                -- Attack with cooldown
-                local currentTime = tick()
-                if currentTime - LastAttackTime >= Settings.AttackDelay then
-                    PerformAttack()
-                    LastAttackTime = currentTime
+                    
+                    -- Attack with cooldown
+                    local currentTime = tick()
+                    if currentTime - LastAttackTime >= Settings.AttackDelay then
+                        PerformAttack()
+                        LastAttackTime = currentTime
+                    end
                 end
             else
-                UpdateStatus("Waiting for mobs...")
-                HRP.CFrame = CFrame.new(CenterPosition + Vector3.new(0, 10, 0))
+                UpdateStatus("Searching for mobs...")
+                -- Di chuyển đến khu vực quái spawn
+                local spawnPos = Q.Pos.Position
+                HRP.CFrame = CFrame.new(spawnPos + Vector3.new(0, 10, 0))
             end
         end)
     end)
